@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as Proto from '../protocol';
+import type * as Proto from '../protocol';
 import { ITypeScriptServiceClient } from '../typescriptService';
 import API from '../utils/api';
 import { coalesce } from '../utils/arrays';
@@ -36,26 +36,30 @@ function mode2ScriptKind(mode: string): 'TS' | 'TSX' | 'JS' | 'JSX' | undefined 
 	return undefined;
 }
 
+const enum BufferOperationType { Close, Open, Change }
+
 class CloseOperation {
-	readonly type = 'close';
+	readonly type = BufferOperationType.Close;
 	constructor(
 		public readonly args: string
 	) { }
 }
 
 class OpenOperation {
-	readonly type = 'open';
+	readonly type = BufferOperationType.Open;
 	constructor(
 		public readonly args: Proto.OpenRequestArgs
 	) { }
 }
 
 class ChangeOperation {
-	readonly type = 'change';
+	readonly type = BufferOperationType.Change;
 	constructor(
 		public readonly args: Proto.FileCodeEdits
 	) { }
 }
+
+type BufferOperation = CloseOperation | OpenOperation | ChangeOperation;
 
 /**
  * Manages synchronization of buffers with the TS server.
@@ -64,7 +68,7 @@ class ChangeOperation {
  */
 class BufferSynchronizer {
 
-	private readonly _pending = new ResourceMap<CloseOperation | OpenOperation | ChangeOperation>();
+	private readonly _pending = new ResourceMap<BufferOperation>();
 
 	constructor(
 		private readonly client: ITypeScriptServiceClient
@@ -72,22 +76,22 @@ class BufferSynchronizer {
 
 	public open(resource: vscode.Uri, args: Proto.OpenRequestArgs) {
 		if (this.supportsBatching) {
-			this.updatePending(resource, pending => {
-				pending.set(resource, new OpenOperation(args));
-			});
+			this.updatePending(resource, new OpenOperation(args));
 		} else {
 			this.client.executeWithoutWaitingForResponse('open', args);
 		}
 	}
 
-	public close(resource: vscode.Uri, filepath: string) {
+	/**
+	 * @return Was the buffer open?
+	 */
+	public close(resource: vscode.Uri, filepath: string): boolean {
 		if (this.supportsBatching) {
-			this.updatePending(resource, pending => {
-				pending.set(resource, new CloseOperation(filepath));
-			});
+			return this.updatePending(resource, new CloseOperation(filepath));
 		} else {
 			const args: Proto.FileRequestArgs = { file: filepath };
 			this.client.executeWithoutWaitingForResponse('close', args);
+			return true;
 		}
 	}
 
@@ -97,16 +101,14 @@ class BufferSynchronizer {
 		}
 
 		if (this.supportsBatching) {
-			this.updatePending(resource, pending => {
-				pending.set(resource, new ChangeOperation({
-					fileName: filepath,
-					textChanges: events.map((change): Proto.CodeEdit => ({
-						newText: change.text,
-						start: typeConverters.Position.toLocation(change.range.start),
-						end: typeConverters.Position.toLocation(change.range.end),
-					})).reverse(), // Send the edits end-of-document to start-of-document order
-				}));
-			});
+			this.updatePending(resource, new ChangeOperation({
+				fileName: filepath,
+				textChanges: events.map((change): Proto.CodeEdit => ({
+					newText: change.text,
+					start: typeConverters.Position.toLocation(change.range.start),
+					end: typeConverters.Position.toLocation(change.range.end),
+				})).reverse(), // Send the edits end-of-document to start-of-document order
+			}));
 		} else {
 			for (const { range, text } of events) {
 				const args: Proto.ChangeRequestArgs = {
@@ -143,9 +145,9 @@ class BufferSynchronizer {
 			const changedFiles: Proto.FileCodeEdits[] = [];
 			for (const change of this._pending.values) {
 				switch (change.type) {
-					case 'change': changedFiles.push(change.args); break;
-					case 'open': openFiles.push(change.args); break;
-					case 'close': closedFiles.push(change.args); break;
+					case BufferOperationType.Change: changedFiles.push(change.args); break;
+					case BufferOperationType.Open: openFiles.push(change.args); break;
+					case BufferOperationType.Close: closedFiles.push(change.args); break;
 				}
 			}
 			this.client.execute('updateOpen', { changedFiles, closedFiles, openFiles }, nulToken, { nonRecoverable: true });
@@ -157,12 +159,24 @@ class BufferSynchronizer {
 		return this.client.apiVersion.gte(API.v340);
 	}
 
-	private updatePending(resource: vscode.Uri, f: (pending: ResourceMap<CloseOperation | OpenOperation | ChangeOperation>) => void): void {
+	private updatePending(resource: vscode.Uri, op: BufferOperation): boolean {
+		switch (op.type) {
+			case BufferOperationType.Close:
+				const existing = this._pending.get(resource);
+				switch (existing?.type) {
+					case BufferOperationType.Open:
+						this._pending.delete(resource);
+						return false; // Open then close. No need to do anything
+				}
+				break;
+		}
+
 		if (this._pending.has(resource)) {
 			// we saw this file before, make sure we flush before working with it again
 			this.flush();
 		}
-		f(this._pending);
+		this._pending.set(resource, op);
+		return true;
 	}
 }
 
@@ -223,9 +237,16 @@ class SyncedBuffer {
 		}
 	}
 
-	public close(): void {
-		this.synchronizer.close(this.resource, this.filepath);
+	/**
+	 * @return Was the buffer open?
+	 */
+	public close(): boolean {
+		if (this.state !== BufferState.Open) {
+			this.state = BufferState.Closed;
+			return false;
+		}
 		this.state = BufferState.Closed;
+		return this.synchronizer.close(this.resource, this.filepath);
 	}
 
 	public onContentChanged(events: readonly vscode.TextDocumentContentChangeEvent[]): void {
@@ -280,19 +301,25 @@ class GetErrRequest {
 		public readonly files: ResourceMap<void>,
 		onDone: () => void
 	) {
-		const args: Proto.GeterrRequestArgs = {
-			delay: 0,
-			files: coalesce(Array.from(files.entries).map(entry => client.normalizedPath(entry.resource)))
-		};
+		const allFiles = coalesce(Array.from(files.entries).map(entry => client.normalizedPath(entry.resource)));
+		if (!allFiles.length) {
+			this._done = true;
+			onDone();
+		} else {
+			const request = client.configuration.enableProjectDiagnostics
+				// Note that geterrForProject is almost certainly not the api we want here as it ends up computing far
+				// too many diagnostics
+				? client.executeAsync('geterrForProject', { delay: 0, file: allFiles[0] }, this._token.token)
+				: client.executeAsync('geterr', { delay: 0, files: allFiles }, this._token.token);
 
-		client.executeAsync('geterr', args, this._token.token)
-			.finally(() => {
+			request.finally(() => {
 				if (this._done) {
 					return;
 				}
 				this._done = true;
 				onDone();
 			});
+		}
 	}
 
 	public cancel(): any {
@@ -320,7 +347,7 @@ export default class BufferSyncSupport extends Disposable {
 
 	constructor(
 		client: ITypeScriptServiceClient,
-		modeIds: string[]
+		modeIds: readonly string[]
 	) {
 		super();
 		this.client = client;
@@ -401,7 +428,10 @@ export default class BufferSyncSupport extends Disposable {
 		this.pendingGetErr?.cancel();
 		this.pendingDiagnostics.clear();
 		this.synchronizer.reset();
+	}
 
+	public reinitialize(): void {
+		this.reset();
 		for (const buffer of this.syncedBuffers.allBuffers) {
 			buffer.open();
 		}
@@ -436,13 +466,17 @@ export default class BufferSyncSupport extends Disposable {
 		this.pendingDiagnostics.delete(resource);
 		this.pendingGetErr?.files.delete(resource);
 		this.syncedBuffers.delete(resource);
-		syncedBuffer.close();
+		const wasBufferOpen = syncedBuffer.close();
 		this._onDelete.fire(resource);
-		this.requestAllDiagnostics();
+		if (wasBufferOpen) {
+			this.requestAllDiagnostics();
+		}
 	}
 
 	public interuptGetErr<R>(f: () => R): R {
-		if (!this.pendingGetErr) {
+		if (!this.pendingGetErr
+			|| this.client.configuration.enableProjectDiagnostics // `geterr` happens on seperate server so no need to cancel it.
+		) {
 			return f();
 		}
 
@@ -535,6 +569,8 @@ export default class BufferSyncSupport extends Disposable {
 					orderedFileSet.set(resource, undefined);
 				}
 			}
+
+			this.pendingGetErr = undefined;
 		}
 
 		// Add all open TS buffers to the geterr request. They might be visible

@@ -5,7 +5,7 @@
 
 import * as nls from 'vs/nls';
 import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
-import { IExtensionEnablementService } from 'vs/workbench/services/extensionManagement/common/extensionManagement';
+import { IWorkbenchExtensionEnablementService } from 'vs/workbench/services/extensionManagement/common/extensionManagement';
 import { IRemoteAgentService } from 'vs/workbench/services/remote/common/remoteAgentService';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
@@ -28,6 +28,7 @@ import { Schemas } from 'vs/base/common/network';
 import { DisposableStore } from 'vs/base/common/lifecycle';
 import { IStaticExtensionsService } from 'vs/workbench/services/extensions/common/staticExtensions';
 import { DeltaExtensionsResult } from 'vs/workbench/services/extensions/common/extensionDescriptionRegistry';
+import { IRemoteAuthorityResolverService } from 'vs/platform/remote/common/remoteAuthorityResolver';
 
 export class ExtensionService extends AbstractExtensionService implements IExtensionService {
 
@@ -39,9 +40,10 @@ export class ExtensionService extends AbstractExtensionService implements IExten
 		@INotificationService notificationService: INotificationService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@ITelemetryService telemetryService: ITelemetryService,
-		@IExtensionEnablementService extensionEnablementService: IExtensionEnablementService,
+		@IWorkbenchExtensionEnablementService extensionEnablementService: IWorkbenchExtensionEnablementService,
 		@IFileService fileService: IFileService,
 		@IProductService productService: IProductService,
+		@IRemoteAuthorityResolverService private readonly _remoteAuthorityResolverService: IRemoteAuthorityResolverService,
 		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
 		@IConfigurationService private readonly _configService: IConfigurationService,
 		@IStaticExtensionsService private readonly _staticExtensions: IStaticExtensionsService,
@@ -74,10 +76,11 @@ export class ExtensionService extends AbstractExtensionService implements IExten
 	private _createProvider(remoteAuthority: string): IInitDataProvider {
 		return {
 			remoteAuthority: remoteAuthority,
-			getInitData: () => {
-				return this.whenInstalledExtensionsRegistered().then(() => {
-					return this._remoteExtensionsEnvironmentData!;
-				});
+			getInitData: async () => {
+				await this.whenInstalledExtensionsRegistered();
+				const connectionData = this._remoteAuthorityResolverService.getConnectionData(remoteAuthority);
+				const remoteEnvironment = this._remoteExtensionsEnvironmentData!;
+				return { connectionData, remoteEnvironment };
 			}
 		};
 	}
@@ -140,8 +143,10 @@ export class ExtensionService extends AbstractExtensionService implements IExten
 	}
 
 	public _onExtensionHostExit(code: number): void {
-		console.log(`vscode:exit`, code);
-		// ipc.send('vscode:exit', code);
+		// We log the exit code to the console. Do NOT remove this
+		// code as the automated integration tests in browser rely
+		// on this message to exit properly.
+		console.log(`vscode:exit ${code}`);
 	}
 }
 

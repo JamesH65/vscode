@@ -13,6 +13,8 @@ import { ExtHostDocumentData } from 'vs/workbench/api/common/extHostDocumentData
 import { IExtHostRpcService } from 'vs/workbench/api/common/extHostRpcService';
 import { ExtHostTextEditor } from 'vs/workbench/api/common/extHostTextEditor';
 import * as typeConverters from 'vs/workbench/api/common/extHostTypeConverters';
+import { ILogService } from 'vs/platform/log/common/log';
+import { ResourceMap } from 'vs/base/common/map';
 
 export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsShape {
 
@@ -21,7 +23,7 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 	private _activeEditorId: string | null = null;
 
 	private readonly _editors = new Map<string, ExtHostTextEditor>();
-	private readonly _documents = new Map<string, ExtHostDocumentData>();
+	private readonly _documents = new ResourceMap<ExtHostDocumentData>();
 
 	private readonly _onDidAddDocuments = new Emitter<ExtHostDocumentData[]>();
 	private readonly _onDidRemoveDocuments = new Emitter<ExtHostDocumentData[]>();
@@ -35,6 +37,7 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 
 	constructor(
 		@IExtHostRpcService private readonly _extHostRpc: IExtHostRpcService,
+		@ILogService private readonly _logService: ILogService
 	) { }
 
 	$acceptDocumentsAndEditorsDelta(delta: IDocumentsAndEditorsDelta): void {
@@ -46,9 +49,8 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 		if (delta.removedDocuments) {
 			for (const uriComponent of delta.removedDocuments) {
 				const uri = URI.revive(uriComponent);
-				const id = uri.toString();
-				const data = this._documents.get(id);
-				this._documents.delete(id);
+				const data = this._documents.get(uri);
+				this._documents.delete(uri);
 				if (data) {
 					removedDocuments.push(data);
 				}
@@ -58,7 +60,7 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 		if (delta.addedDocuments) {
 			for (const data of delta.addedDocuments) {
 				const resource = URI.revive(data.uri);
-				assert.ok(!this._documents.has(resource.toString()), `document '${resource} already exists!'`);
+				assert.ok(!this._documents.has(resource), `document '${resource} already exists!'`);
 
 				const documentData = new ExtHostDocumentData(
 					this._extHostRpc.getProxy(MainContext.MainThreadDocuments),
@@ -69,7 +71,7 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 					data.versionId,
 					data.isDirty
 				);
-				this._documents.set(resource.toString(), documentData);
+				this._documents.set(resource, documentData);
 				addedDocuments.push(documentData);
 			}
 		}
@@ -87,13 +89,14 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 		if (delta.addedEditors) {
 			for (const data of delta.addedEditors) {
 				const resource = URI.revive(data.documentUri);
-				assert.ok(this._documents.has(resource.toString()), `document '${resource}' does not exist`);
+				assert.ok(this._documents.has(resource), `document '${resource}' does not exist`);
 				assert.ok(!this._editors.has(data.id), `editor '${data.id}' already exists!`);
 
-				const documentData = this._documents.get(resource.toString())!;
+				const documentData = this._documents.get(resource)!;
 				const editor = new ExtHostTextEditor(
-					this._extHostRpc.getProxy(MainContext.MainThreadTextEditors),
 					data.id,
+					this._extHostRpc.getProxy(MainContext.MainThreadTextEditors),
+					this._logService,
 					documentData,
 					data.selections.map(typeConverters.Selection.to),
 					data.options,
@@ -129,13 +132,11 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 	}
 
 	getDocument(uri: URI): ExtHostDocumentData | undefined {
-		return this._documents.get(uri.toString());
+		return this._documents.get(uri);
 	}
 
 	allDocuments(): ExtHostDocumentData[] {
-		const result: ExtHostDocumentData[] = [];
-		this._documents.forEach(data => result.push(data));
-		return result;
+		return [...this._documents.values()];
 	}
 
 	getEditor(id: string): ExtHostTextEditor | undefined {
@@ -151,9 +152,7 @@ export class ExtHostDocumentsAndEditors implements ExtHostDocumentsAndEditorsSha
 	}
 
 	allEditors(): ExtHostTextEditor[] {
-		const result: ExtHostTextEditor[] = [];
-		this._editors.forEach(data => result.push(data));
-		return result;
+		return [...this._editors.values()];
 	}
 }
 

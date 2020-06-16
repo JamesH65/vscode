@@ -13,10 +13,10 @@ import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { IWorkspaceContextService, WorkbenchState } from 'vs/platform/workspace/common/workspace';
 import { IInitData, UIKind } from 'vs/workbench/api/common/extHost.protocol';
 import { MessageType, createMessageOfType, isMessageOfType } from 'vs/workbench/services/extensions/common/extensionHostProtocol';
-import { IExtensionHostStarter } from 'vs/workbench/services/extensions/common/extensions';
+import { IExtensionHostStarter, ExtensionHostLogFileName } from 'vs/workbench/services/extensions/common/extensions';
 import { parseExtensionDevOptions } from 'vs/workbench/services/extensions/common/extensionDevOptions';
 import { IRemoteAgentEnvironment } from 'vs/platform/remote/common/remoteAgentEnvironment';
-import { IRemoteAuthorityResolverService } from 'vs/platform/remote/common/remoteAuthorityResolver';
+import { IRemoteAuthorityResolverService, IRemoteConnectionData } from 'vs/platform/remote/common/remoteAuthorityResolver';
 import * as platform from 'vs/base/common/platform';
 import { Schemas } from 'vs/base/common/network';
 import { Disposable } from 'vs/base/common/lifecycle';
@@ -27,10 +27,20 @@ import { VSBuffer } from 'vs/base/common/buffer';
 import { IExtensionHostDebugService } from 'vs/platform/debug/common/extensionHostDebug';
 import { IProductService } from 'vs/platform/product/common/productService';
 import { ISignService } from 'vs/platform/sign/common/sign';
+import { joinPath } from 'vs/base/common/resources';
+import { URI } from 'vs/base/common/uri';
+import { Registry } from 'vs/platform/registry/common/platform';
+import { IOutputChannelRegistry, Extensions } from 'vs/workbench/services/output/common/output';
+import { localize } from 'vs/nls';
+
+export interface IRemoteInitData {
+	readonly connectionData: IRemoteConnectionData | null;
+	readonly remoteEnvironment: IRemoteAgentEnvironment;
+}
 
 export interface IInitDataProvider {
 	readonly remoteAuthority: string;
-	getInitData(): Promise<IRemoteAgentEnvironment>;
+	getInitData(): Promise<IRemoteInitData>;
 }
 
 export class RemoteExtensionHostClient extends Disposable implements IExtensionHostStarter {
@@ -131,11 +141,16 @@ export class RemoteExtensionHostClient extends Disposable implements IExtensionH
 						reject('timeout');
 					}, 60 * 1000);
 
+					let logFile: URI;
+
 					const disposable = protocol.onMessage(msg => {
 
 						if (isMessageOfType(msg, MessageType.Ready)) {
 							// 1) Extension Host is ready to receive messages, initialize it
-							this._createExtHostInitData(isExtensionDevelopmentDebug).then(data => protocol.send(VSBuffer.fromString(JSON.stringify(data))));
+							this._createExtHostInitData(isExtensionDevelopmentDebug).then(data => {
+								logFile = data.logFile;
+								protocol.send(VSBuffer.fromString(JSON.stringify(data)));
+							});
 							return;
 						}
 
@@ -147,9 +162,13 @@ export class RemoteExtensionHostClient extends Disposable implements IExtensionH
 							// stop listening for messages here
 							disposable.dispose();
 
+							// Register log channel for remote exthost log
+							Registry.as<IOutputChannelRegistry>(Extensions.OutputChannels).registerChannel({ id: 'remoteExtHostLog', label: localize('remote extension host Log', "Remote Extension Host"), file: logFile, log: true });
+
 							// release this promise
 							this._protocol = protocol;
 							resolve(protocol);
+
 							return;
 						}
 
@@ -176,26 +195,27 @@ export class RemoteExtensionHostClient extends Disposable implements IExtensionH
 	}
 
 	private _createExtHostInitData(isExtensionDevelopmentDebug: boolean): Promise<IInitData> {
-		return Promise.all([this._allExtensions, this._telemetryService.getTelemetryInfo(), this._initDataProvider.getInitData()]).then(([allExtensions, telemetryInfo, remoteExtensionHostData]) => {
+		return Promise.all([this._allExtensions, this._telemetryService.getTelemetryInfo(), this._initDataProvider.getInitData()]).then(([allExtensions, telemetryInfo, remoteInitData]) => {
 			// Collect all identifiers for extension ids which can be considered "resolved"
 			const resolvedExtensions = allExtensions.filter(extension => !extension.main).map(extension => extension.identifier);
 			const hostExtensions = allExtensions.filter(extension => extension.main && extension.api === 'none').map(extension => extension.identifier);
 			const workspace = this._contextService.getWorkspace();
+			const remoteEnv = remoteInitData.remoteEnvironment;
 			const r: IInitData = {
 				commit: this._productService.commit,
 				version: this._productService.version,
-				parentPid: remoteExtensionHostData.pid,
+				parentPid: remoteEnv.pid,
 				environment: {
 					isExtensionDevelopmentDebug,
-					appRoot: remoteExtensionHostData.appRoot,
-					appSettingsHome: remoteExtensionHostData.appSettingsHome,
+					appRoot: remoteEnv.appRoot,
+					appSettingsHome: remoteEnv.appSettingsHome,
 					appName: this._productService.nameLong,
 					appUriScheme: this._productService.urlProtocol,
 					appLanguage: platform.language,
 					extensionDevelopmentLocationURI: this._environmentService.extensionDevelopmentLocationURI,
 					extensionTestsLocationURI: this._environmentService.extensionTestsLocationURI,
-					globalStorageHome: remoteExtensionHostData.globalStorageHome,
-					userHome: remoteExtensionHostData.userHome,
+					globalStorageHome: remoteEnv.globalStorageHome,
+					userHome: remoteEnv.userHome,
 					webviewResourceRoot: this._environmentService.webviewResourceRoot,
 					webviewCspSource: this._environmentService.webviewCspSource,
 				},
@@ -206,14 +226,16 @@ export class RemoteExtensionHostClient extends Disposable implements IExtensionH
 				},
 				remote: {
 					isRemote: true,
-					authority: this._initDataProvider.remoteAuthority
+					authority: this._initDataProvider.remoteAuthority,
+					connectionData: remoteInitData.connectionData
 				},
 				resolvedExtensions: resolvedExtensions,
 				hostExtensions: hostExtensions,
-				extensions: remoteExtensionHostData.extensions,
+				extensions: remoteEnv.extensions,
 				telemetryInfo,
 				logLevel: this._logService.getLevel(),
-				logsLocation: remoteExtensionHostData.extensionHostLogsPath,
+				logsLocation: remoteEnv.extensionHostLogsPath,
+				logFile: joinPath(remoteEnv.extensionHostLogsPath, `${ExtensionHostLogFileName}.log`),
 				autoStart: true,
 				uiKind: platform.isWeb ? UIKind.Web : UIKind.Desktop
 			};

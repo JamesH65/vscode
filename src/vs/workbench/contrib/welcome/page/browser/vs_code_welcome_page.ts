@@ -6,9 +6,14 @@
 import { escape } from 'vs/base/common/strings';
 import { localize } from 'vs/nls';
 
+const toolsAndLanguages = escape(localize('welcomePage.installExtensionPacks', "Tools and languages"))
+	.replace(/"/g, '&quot;');
+const settingsAndKeybindings = escape(localize('welcomePage.installKeymapDescription', "Settings and keybindings"))
+	.replace(/"/g, '&quot;');
+
 export default () => `
 <div class="welcomePageContainer">
-	<div class="welcomePage">
+	<div class="welcomePage" role="document">
 		<div class="title">
 			<h1 class="caption">${escape(localize('welcomePage.vscode', "Visual Studio Code"))}</h1>
 			<p class="subtitle detail">${escape(localize({ key: 'welcomePage.editingEvolved', comment: ['Shown as subtitle on the Welcome page.'] }, "Editing evolved"))}</p>
@@ -50,11 +55,11 @@ export default () => `
 				<div class="section customize">
 					<h2 class="caption">${escape(localize('welcomePage.customize', "Customize"))}</h2>
 					<div class="list">
-						<div class="item showLanguageExtensions"><button role="group" data-href="command:workbench.extensions.action.showLanguageExtensions"><h3 class="caption">${escape(localize('welcomePage.installExtensionPacks', "Tools and languages"))}</h3> <span class="detail">${escape(localize('welcomePage.installExtensionPacksDescription', "Install support for {0} and {1}"))
+						<div class="item showLanguageExtensions"><button role="group" aria-label="${toolsAndLanguages}" data-href="command:workbench.extensions.action.showLanguageExtensions"><h3 class="caption">${toolsAndLanguages}</h3> <span class="detail">${escape(localize('welcomePage.installExtensionPacksDescription', "Install support for {0} and {1}"))
 		.replace('{0}', `<span class="extensionPackList"></span>`)
 		.replace('{1}', `<a href="command:workbench.extensions.action.showLanguageExtensions" title="${localize('welcomePage.showLanguageExtensions', "Show more language extensions")}">${escape(localize('welcomePage.moreExtensions', "more"))}</a>`)}
 						</span></button></div>
-						<div class="item showRecommendedKeymapExtensions"><button role="group" data-href="command:workbench.extensions.action.showRecommendedKeymapExtensions"><h3 class="caption">${escape(localize('welcomePage.installKeymapDescription', "Settings and keybindings"))}</h3> <span class="detail">${escape(localize('welcomePage.installKeymapExtension', "Install the settings and keyboard shortcuts of {0} and {1}"))
+						<div class="item showRecommendedKeymapExtensions"><button role="group" aria-label="${settingsAndKeybindings}" data-href="command:workbench.extensions.action.showRecommendedKeymapExtensions"><h3 class="caption">${settingsAndKeybindings}</h3> <span class="detail">${escape(localize('welcomePage.installKeymapExtension', "Install the settings and keyboard shortcuts of {0} and {1}"))
 		.replace('{0}', `<span class="keymapList"></span>`)
 		.replace('{1}', `<a href="command:workbench.extensions.action.showRecommendedKeymapExtensions" title="${localize('welcomePage.showKeymapExtensions', "Show other keymap extensions")}">${escape(localize('welcomePage.others', "others"))}</a>`)}
 						</span></button></div>
@@ -66,7 +71,7 @@ export default () => `
 					<div class="list">
 						<div class="item showCommands"><button data-href="command:workbench.action.showCommands"><h3 class="caption">${escape(localize('welcomePage.showCommands', "Find and run all commands"))}</h3> <span class="detail">${escape(localize('welcomePage.showCommandsDescription', "Rapidly access and search commands from the Command Palette ({0})")).replace('{0}', '<span class="shortcut" data-command="workbench.action.showCommands"></span>')}</span></button></div>
 						<div class="item showInterfaceOverview"><button data-href="command:workbench.action.showInterfaceOverview"><h3 class="caption">${escape(localize('welcomePage.interfaceOverview', "Interface overview"))}</h3> <span class="detail">${escape(localize('welcomePage.interfaceOverviewDescription', "Get a visual overlay highlighting the major components of the UI"))}</span></button></div>
-						<div class="item showInteractivePlayground"><button data-href="command:workbench.action.showInteractivePlayground"><h3 class="caption">${escape(localize('welcomePage.interactivePlayground', "Interactive playground"))}</h3> <span class="detail">${escape(localize('welcomePage.interactivePlaygroundDescription', "Try essential editor features out in a short walkthrough"))}</span></button></div>
+						<div class="item showInteractivePlayground"><button data-href="command:workbench.action.showInteractivePlayground"><h3 class="caption">${escape(localize('welcomePage.interactivePlayground', "Interactive playground"))}</h3> <span class="detail">${escape(localize('welcomePage.interactivePlaygroundDescription', "Try out essential editor features in a short walkthrough"))}</span></button></div>
 					</div>
 				</div>
 			</div>
